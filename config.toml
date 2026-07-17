@@ -1,0 +1,13 @@
+[plugin]
+enabled = true
+# 插件配置版本号，请勿手动修改
+config_version = "1.0.0"
+# 管理员 QQ 号，多个 QQ 用中/英文逗号分隔。留空则允许所有用户调用。
+admin_qq = "114,514"
+command_trigger = "/模型健康度"
+
+[stats]
+# 统计的计算范围类型。可选：minutes (按分钟) 或 count (按请求次数)
+range_type = "minutes"
+# 统计的范围值。若是 minutes 则为分钟，若是 count 则为请求次数
+range_value = 30
