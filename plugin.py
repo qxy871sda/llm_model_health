@@ -310,7 +310,7 @@ class LLMMonitorPlugin(MaiBotPlugin):
             cost = db_costs.get(model, 0)
             avg_time = db_times.get(model, 0)
             if succ > 0:
-                history_rows.append(f"- **{model}**: 成功 {succ} 次 | 平均耗时 {avg_time:.2f}s")
+                history_rows.append(f"- **{model}**: 成功 {succ} 次 | 平均耗时 {avg_time:.2f}s | 累计费用 ￥{cost:.4f}")
 
         return {
             "range_desc": range_desc,
