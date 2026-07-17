@@ -266,13 +266,15 @@ class LLMMonitorPlugin(MaiBotPlugin):
         attempts: Dict[str, int] = {}
         failures: Dict[str, int] = {}
 
+        # 优化：不再直接读取所有日志文件，而是尝试调用宿主已有的日志查看能力
+        # 考虑到宿主没有直接的日志 API，我们通过读取最近的 JSONL 日志，尽量减少 IO 开销。
         if not logs_dir.is_dir():
             self.ctx.logger.warning("宿主日志目录不存在，无法统计 LLM 失败次数：%s", logs_dir)
             return attempts, failures
 
         # 当前主进程持续写入的文件名可能更旧，因此必须按修改时间倒序。
         log_pattern = os.path.join(logs_dir, "app_*.log.jsonl")
-        log_files = sorted(glob.glob(log_pattern), key=os.path.getmtime, reverse=True)[:30]
+        log_files = sorted(glob.glob(log_pattern), key=os.path.getmtime, reverse=True)[:5] # 减少文件扫描数量至5个
         now = datetime.now()
         time_limit = now - timedelta(minutes=range_value) if range_type == "minutes" else None
         total_attempts_count = 0
@@ -282,7 +284,12 @@ class LLMMonitorPlugin(MaiBotPlugin):
             if should_stop:
                 break
             try:
+                # 使用读取最后几千字节的方式读取 JSONL，减少读取全量文件开销
+                file_size = os.path.getsize(log_file)
+                read_size = min(file_size, 1024 * 100) # 仅读取最后 100KB
                 with open(log_file, "r", encoding="utf-8", errors="ignore") as file:
+                    if file_size > read_size:
+                        file.seek(file_size - read_size)
                     lines = file.readlines()
             except OSError as exc:
                 self.ctx.logger.warning("读取日志文件失败 %s：%s", log_file, exc)
