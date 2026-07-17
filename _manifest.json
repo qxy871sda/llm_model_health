@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "1.0.2",
+  "version": "1.0.4",
   "name": "LLM 模型健康度/成功率统计",
   "description": "总结并展示 MaiBot 使用的 LLM 模型的请求数、成功数与历史累计总量。",
   "author": {

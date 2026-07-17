@@ -1,13 +1,17 @@
 [plugin]
 enabled = true
 # 插件配置版本号，请勿手动修改
-config_version = "1.0.0"
-# 管理员 QQ 号，多个 QQ 用中/英文逗号分隔。留空则允许所有用户调用。
-admin_qq = "114,514"
+config_version = "1.0.4"
+# 管理员 QQ 号，多个 QQ 用中/英文逗号分隔。留空时所有人均不可调用。
+admin_qq = ""
 command_trigger = "/模型健康度"
 
 [stats]
-# 统计的计算范围类型。可选：minutes (按分钟) 或 count (按请求次数)
+# 日志统计范围类型。可选：minutes（按分钟）或 count（按请求次数）
 range_type = "minutes"
-# 统计的范围值。若是 minutes 则为分钟，若是 count 则为请求次数
+# 日志统计范围值。若是 minutes 则为分钟，若是 count 则为请求次数
 range_value = 30
+# 是否获取并展示历史模型请求数、平均耗时与累计费用汇总
+enable_sdk_statistics = true
+# 历史模型汇总范围，代表最近 N 天，可设置为 1 至 365
+sdk_statistics_days = 365
