@@ -1,14 +1,16 @@
 from datetime import datetime, timedelta
 from maibot_sdk import Command, Field, MaiBotPlugin, PluginConfigBase
 from pathlib import Path
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import asyncio
 import glob
 import json
 import os
 import re
-import sqlite3
+
+
+SDK_MODEL_LIMIT = 50
 
 
 class PluginSectionConfig(PluginConfigBase):
@@ -19,15 +21,19 @@ class PluginSectionConfig(PluginConfigBase):
     enabled: bool = Field(default=True, description="是否启用此统计插件", json_schema_extra={"label": "启用插件"})
     admin_qq: str = Field(
         default="", 
-        description="有权限调出数据的管理员 QQ 号，多个 QQ 用中/英文逗号分隔。留空则允许所有用户调用。", 
+        description="有权限调出数据的管理员 QQ 号，多个 QQ 用中/英文逗号分隔。留空时所有人均不可调用。", 
         json_schema_extra={"label": "管理员 QQ"}
     )
     command_trigger: str = Field(
         default="/模型健康度", 
         description="调出统计数据的指令，修改后请重启插件生效", 
-        json_schema_extra={"label": "指令触发器"}
+        json_schema_extra={"label": "触发指令"}
     )
-    config_version: str = Field(default="1.0.0", description="配置版本", json_schema_extra={"label": "配置版本", "disabled": True})
+    config_version: str = Field(
+        default="1.0.4",
+        description="配置版本",
+        json_schema_extra={"label": "配置版本", "disabled": True},
+    )
 
 
 class StatsSectionConfig(PluginConfigBase):
@@ -45,6 +51,18 @@ class StatsSectionConfig(PluginConfigBase):
         default=30, 
         description="统计计算范围的数值。若类型为 minutes，代表统计最近 N 分钟；若类型为 count，代表统计最近 N 次模型请求。",
         json_schema_extra={"label": "统计范围数值", "min": 1}
+    )
+    enable_sdk_statistics: bool = Field(
+        default=True,
+        description="是否获取并展示历史模型请求数、平均耗时与累计费用汇总。",
+        json_schema_extra={"label": "启用历史模型汇总"},
+    )
+    sdk_statistics_days: int = Field(
+        default=365,
+        ge=1,
+        le=365,
+        description="历史模型汇总的查询范围，代表最近 N 天，可设置为 1 至 365。",
+        json_schema_extra={"label": "历史汇总天数", "min": 1, "max": 365},
     )
 
 
@@ -94,7 +112,13 @@ class LLMMonitorPlugin(MaiBotPlugin):
         description="统计并展示 LLM 模型的调用成功率与历史总量",
         pattern=r"^/(?P<command>模型健康度)(?:\s+.*)?$",
     )
-    async def handle_llm_stats(self, stream_id: str = "", user_id: str = "", matched_groups: dict = None, **kwargs: Any) -> tuple[bool, str, bool]:
+    async def handle_llm_stats(
+        self,
+        stream_id: str = "",
+        user_id: str = "",
+        matched_groups: Optional[Dict[str, str]] = None,
+        **kwargs: Any,
+    ) -> Tuple[bool, Optional[str], bool]:
         del kwargs
         if not self.config.plugin.enabled:
             return True, "", True
@@ -105,22 +129,23 @@ class LLMMonitorPlugin(MaiBotPlugin):
         if f"/{cmd}".lower() != user_trigger.lower():
             return False, "", False
         
-        # 解析管理员 QQ 列表（兼容中英文逗号，留空则允许所有人调用）
+        # 解析管理员 QQ 列表，未配置管理员时默认拒绝所有调用。
         raw_admins = self.config.plugin.admin_qq.replace("，", ",")
-        admin_list = [x.strip() for x in raw_admins.split(",") if x.strip()]
-        if admin_list and str(user_id) not in admin_list:
+        admin_list = [admin.strip() for admin in raw_admins.split(",") if admin.strip()]
+        if not admin_list:
+            await self.ctx.send.text("当前未配置管理员，请先填写 admin_qq。", stream_id)
+            return True, None, True
+        if str(user_id) not in admin_list:
             await self.ctx.send.text("抱歉，您没有权限使用此指令。", stream_id)
             return True, None, True
-        
-        report_data = await self._generate_report()
 
-        if not report_data["recent_report"] and not report_data["history_report"]:
+        report_data = await self._generate_report()
+        if not report_data["recent_report"] and not report_data["sdk_report"]:
             return True, "📊 **LLM 模型使用统计**\n\n暂无任何模型请求或使用记录。", True
 
-        bot_qq = str(await self.ctx.config.get("bot.qq_account", "0") or "0")
-        bot_name = str(await self.ctx.config.get("bot.nickname", "麦麦") or "麦麦")
-        
-        forward_messages = []
+        bot_qq = str(await self.ctx.config.get("bot.qq_account", "0"))
+        bot_name = str(await self.ctx.config.get("bot.nickname", "麦麦"))
+        forward_messages: List[Dict[str, Any]] = []
         
         # 1. 标题页
         title_text = (
@@ -139,7 +164,7 @@ class LLMMonitorPlugin(MaiBotPlugin):
         # 2. 近期模型运行状态
         if report_data["recent_report"]:
             recent_text = (
-                f"**近期运行状态 (基于日志统计)**\n"
+                f"**近期运行状态 (基于日志统计)**\n" # * SDK 暂无 LLM 重试失败次数接口，因此此部分需要解析日志。
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"{report_data['recent_report']}"
             )
@@ -148,58 +173,108 @@ class LLMMonitorPlugin(MaiBotPlugin):
                 "nickname": "近期运行状态",
                 "segments": [{"type": "text", "content": recent_text}]
             })
-            
-        # 3. 历史累计统计
-        if report_data["history_report"]:
-            history_text = (
-                f"**历史累计统计 (基于数据库)**\n"
+
+        if report_data["sdk_report"]:
+            sdk_text = (
+                f"**历史 {report_data['sdk_statistics_days']} 天模型汇总 (基于数据库)**\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"{report_data['history_report']}\n"
+                f"{report_data['sdk_report']}\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"* 注: 历史统计仅包含成功完成的请求。"
             )
             forward_messages.append({
                 "user_id": bot_qq,
                 "nickname": "历史累计统计",
-                "segments": [{"type": "text", "content": history_text}]
+                    "segments": [{"type": "text", "content": sdk_text}]
             })
             
         await self.ctx.send.forward(forward_messages, stream_id)
         return True, "统计报告已通过合并转发消息发送喵！", True
 
     async def _generate_report(self) -> dict[str, Any]:
-        return await asyncio.to_thread(self._build_report_sync)
+        """分别通过日志和 SDK 获取数据，再组装报告。"""
 
-    def _build_report_sync(self) -> dict[str, Any]:
-        project_root = Path(__file__).resolve().parents[2]
-        logs_dir = project_root / "logs"
-        db_path = project_root / "data" / "MaiBot.db"
+        logs_dir = self._get_logs_dir()
+        attempts, failures = await asyncio.to_thread(self._scan_recent_logs, logs_dir)
+        enable_sdk_statistics = self.config.stats.enable_sdk_statistics
+        sdk_statistics_days = self.config.stats.sdk_statistics_days
+        sdk_models: List[Dict[str, Any]] = []
+        if enable_sdk_statistics:
+            sdk_models = await self.ctx.statistics.local.models(days=sdk_statistics_days, limit=SDK_MODEL_LIMIT)
 
-        # 获取配置中的统计范围和类型
+        recent_rows: List[str] = []
+        for model in sorted(set(attempts) | set(failures)):
+            attempt_count = max(attempts.get(model, 0), failures.get(model, 0))
+            failure_count = failures.get(model, 0)
+            success_count = max(0, attempt_count - failure_count)
+            if attempt_count > 0:
+                success_rate = success_count / attempt_count * 100
+                recent_rows.append(
+                    f"- **{model}**：请求 {attempt_count} 次 | 成功 {success_count} 次 | "
+                    f"失败 {failure_count} 次 | 成功率 {success_rate:.1f}%"
+                )
+
+        sdk_rows: List[str] = []
+        for item in sdk_models:
+            model_name = str(item["model_name"]).strip()
+            request_count = int(item["request_count"])
+            total_cost = float(item["total_cost"])
+            avg_response_time = float(item["avg_response_time"])
+            if model_name and request_count > 0:
+                sdk_rows.append(
+                    f"- **{model_name}**：请求 {request_count} 次 | 平均耗时 {avg_response_time:.2f}s"
+                )
+
         range_type = self.config.stats.range_type
         range_value = self.config.stats.range_value
+        range_desc = f"最近 {range_value} 分钟" if range_type == "minutes" else f"最近 {range_value} 次请求"
+        return {
+            "range_desc": range_desc,
+            "sdk_statistics_days": sdk_statistics_days,
+            "sdk_range_text": (
+                f"📈 历史汇总范围：最近 {sdk_statistics_days} 天"
+                if enable_sdk_statistics
+                else "📈 历史模型汇总：已关闭"
+            ),
+            "recent_report": "\n".join(recent_rows) if recent_rows else None,
+            "sdk_report": "\n".join(sdk_rows) if sdk_rows else None,
+        }
 
+    def _get_logs_dir(self) -> Path:
+        """校验标准数据路径后定位宿主日志目录。"""
+
+        # SDK 暂未授予宿主日志目录，只能基于其承诺的标准 data_dir 布局定位。
+        # 严格校验每一级，避免自定义路径布局下意外读取无关目录。
+        data_dir = self.ctx.paths.data_dir.resolve()
+        if (
+            data_dir.name != self.ctx.plugin_id
+            or data_dir.parent.name != "plugins"
+            or data_dir.parent.parent.name != "data"
+        ):
+            raise RuntimeError(
+                "无法从 ctx.paths.data_dir 安全定位宿主日志目录："
+                "运行时路径不符合 <MaiBot>/data/plugins/<plugin_id> 标准布局"
+            )
+        host_root = data_dir.parents[2]
+        return host_root / "logs"
+
+    def _scan_recent_logs(self, logs_dir: Path) -> Tuple[Dict[str, int], Dict[str, int]]:
+        """读取日志中 SDK 尚未提供的模型尝试与失败事件。"""
+
+        range_type = self.config.stats.range_type
+        range_value = self.config.stats.range_value
         attempts: Dict[str, int] = {}
         failures: Dict[str, int] = {}
 
-        # 1. 扫描日志文件以获取近期模型请求和失败统计
-        # 必须按修改时间倒序：当前主进程持续写入的日志文件名可能更旧，
-        # 而大量短生命周期启动日志文件名更新却几乎不含模型请求。
-        # 若按文件名字典序取前几个，会扫到空壳日志，导致“近期运行状态”为空。
+        if not logs_dir.is_dir():
+            self.ctx.logger.warning("宿主日志目录不存在，无法统计 LLM 失败次数：%s", logs_dir)
+            return attempts, failures
+
+        # 当前主进程持续写入的文件名可能更旧，因此必须按修改时间倒序。
         log_pattern = os.path.join(logs_dir, "app_*.log.jsonl")
-        log_files = sorted(
-            glob.glob(log_pattern),
-            key=lambda path: os.path.getmtime(path),
-            reverse=True,
-        )
-        # 扩大扫描上限；真正的停止条件由 minutes/count 控制
-        log_files = log_files[:30]
-
+        log_files = sorted(glob.glob(log_pattern), key=os.path.getmtime, reverse=True)[:30]
         now = datetime.now()
-        time_limit = None
-        if range_type == "minutes":
-            time_limit = now - timedelta(minutes=range_value)
-
+        time_limit = now - timedelta(minutes=range_value) if range_type == "minutes" else None
         total_attempts_count = 0
         should_stop = False
 
@@ -207,116 +282,57 @@ class LLMMonitorPlugin(MaiBotPlugin):
             if should_stop:
                 break
             try:
-                with open(log_file, "r", encoding="utf-8", errors="ignore") as f:
-                    lines = f.readlines()
-                
-                for line in reversed(lines):
-                    if not line.strip():
-                        continue
-                    try:
-                        if "选择请求模型:" in line or "尝试失败，切换到下一个模型" in line:
-                            data = json.loads(line)
-                            event = str(data.get("event", ""))
-                            timestamp_str = str(data.get("timestamp", ""))
-
-                            # 进行时间范围校验
-                            dt = None
-                            if timestamp_str:
-                                try:
-                                    dt = datetime.strptime(f"{now.year}-{timestamp_str}", "%Y-%m-%d %H:%M:%S")
-                                    if dt > now + timedelta(days=1):
-                                        dt = dt.replace(year=now.year - 1)
-                                except Exception:
-                                    pass
-
-                            if time_limit and dt and dt < time_limit:
-                                should_stop = True
-                                break
-
-                            if "选择请求模型:" in event:
-                                match = re.search(r"选择请求模型:\s*([^\s(]+)", event)
-                                if match:
-                                    model = match.group(1).strip()
-                                    attempts[model] = attempts.get(model, 0) + 1
-
-                                    if range_type == "count":
-                                        total_attempts_count += 1
-                                        if total_attempts_count >= range_value:
-                                            should_stop = True
-                                            break
-
-                            elif "尝试失败，切换到下一个模型" in event:
-                                match = re.search(r"模型\s*'([^']+)'\s*尝试失败", event)
-                                if match:
-                                    model = match.group(1).strip()
-                                    failures[model] = failures.get(model, 0) + 1
-                    except Exception:
-                        continue
-            except Exception:
+                with open(log_file, "r", encoding="utf-8", errors="ignore") as file:
+                    lines = file.readlines()
+            except OSError as exc:
+                self.ctx.logger.warning("读取日志文件失败 %s：%s", log_file, exc)
                 continue
 
-        # 2. 从 SQLite 数据库读取历史累计成功请求
-        db_successes: Dict[str, int] = {}
-        db_costs: Dict[str, float] = {}
-        db_times: Dict[str, float] = {}
+            for line in reversed(lines):
+                if not line.strip() or ("选择请求模型:" not in line and "尝试失败，切换到下一个模型" not in line):
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
 
-        if db_path.exists():
-            try:
-                conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT model_assign_name, COUNT(*), SUM(cost), AVG(time_cost) 
-                    FROM llm_usage 
-                    GROUP BY model_assign_name
-                """)
-                for row in cursor.fetchall():
-                    if row[0]:
-                        model = str(row[0]).strip()
-                        db_successes[model] = int(row[1])
-                        db_costs[model] = float(row[2] or 0.0)
-                        db_times[model] = float(row[3] or 0.0)
-                conn.close()
-            except Exception as e:
-                self.ctx.logger.warning(f"读取数据库 llm_usage 失败: {e}")
+                event = str(data.get("event", ""))
+                timestamp = self._parse_log_timestamp(str(data.get("timestamp", "")), now)
+                if time_limit and timestamp and timestamp < time_limit:
+                    should_stop = True
+                    break
 
-        # 3. 汇总所有出现的模型名称并进行排序
-        all_models = sorted(list(set(attempts.keys()) | set(failures.keys()) | set(db_successes.keys())))
+                selected_match = re.search(r"选择请求模型:\s*([^\s(]+)", event)
+                if selected_match:
+                    model = selected_match.group(1).strip()
+                    attempts[model] = attempts.get(model, 0) + 1
+                    if range_type == "count":
+                        total_attempts_count += 1
+                        if total_attempts_count >= range_value:
+                            should_stop = True
+                            break
+                    continue
 
-        range_desc = f"最近 {range_value} 分钟" if range_type == "minutes" else f"最近 {range_value} 次请求"
+                failure_match = re.search(r"模型\s*'([^']+)'\s*尝试失败", event)
+                if failure_match:
+                    model = failure_match.group(1).strip()
+                    failures[model] = failures.get(model, 0) + 1
 
-        if not all_models:
-            return {
-                "range_desc": range_desc,
-                "recent_report": None,
-                "history_report": None
-            }
+        return attempts, failures
 
-        # 4. 构建近期运行状态列表
-        recent_rows: List[str] = []
-        for model in all_models:
-            att = attempts.get(model, 0)
-            fail = failures.get(model, 0)
-            if fail > att:
-                att = fail
-            succ = max(0, att - fail)
-            if att > 0:
-                rate = (succ / att) * 100
-                recent_rows.append(f"- **{model}**: 请求 {att} 次 | 成功 {succ} 次 | 失败 {fail} 次 | 成功率 {rate:.1f}%")
+    @staticmethod
+    def _parse_log_timestamp(timestamp_text: str, now: datetime) -> Optional[datetime]:
+        """解析宿主 JSONL 日志中不含年份的时间戳。"""
 
-        # 5. 构建历史累计统计列表
-        history_rows: List[str] = []
-        for model in all_models:
-            succ = db_successes.get(model, 0)
-            cost = db_costs.get(model, 0)
-            avg_time = db_times.get(model, 0)
-            if succ > 0:
-                history_rows.append(f"- **{model}**: 成功 {succ} 次 | 平均耗时 {avg_time:.2f}s | 累计费用 ￥{cost:.4f}")
-
-        return {
-            "range_desc": range_desc,
-            "recent_report": "\n".join(recent_rows) if recent_rows else None,
-            "history_report": "\n".join(history_rows) if history_rows else None
-        }
+        if not timestamp_text:
+            return None
+        try:
+            timestamp = datetime.strptime(f"{now.year}-{timestamp_text}", "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return None
+        if timestamp > now + timedelta(days=1):
+            return timestamp.replace(year=now.year - 1)
+        return timestamp
 
 
 def create_plugin() -> LLMMonitorPlugin:
