@@ -241,7 +241,13 @@ class LLMMonitorPlugin(MaiBotPlugin):
         }
 
     def _get_logs_dir(self) -> Path:
-        """校验标准数据路径后定位宿主日志目录。"""
+        """校验标准数据路径后定位宿主日志目录。
+
+        ⚠️ 警告与私有实现依赖说明：
+        1. 本方法跳出了插件的标准数据目录沙箱限制，向上跳转三级去访问宿主程序的 `logs/` 目录。
+        2. 该定位逻辑极度依赖宿主默认的文件夹层次结构（即 `<宿主根目录>/data/plugins/<插件ID>`）。
+        3. 如果宿主后续版本修改了数据目录的组织结构，此处的相对路径校验与向上跳转可能会抛出异常或读取错误的目录。
+        """
 
         # SDK 暂未授予宿主日志目录，只能基于其承诺的标准 data_dir 布局定位。
         # 严格校验每一级，避免自定义路径布局下意外读取无关目录。
@@ -259,7 +265,14 @@ class LLMMonitorPlugin(MaiBotPlugin):
         return host_root / "logs"
 
     def _scan_recent_logs(self, logs_dir: Path) -> Tuple[Dict[str, int], Dict[str, int]]:
-        """读取日志中 SDK 尚未提供的模型尝试与失败事件。"""
+        """读取日志中 SDK 尚未提供的模型尝试与失败事件。
+
+        ⚠️ 警告与私有实现依赖说明：
+        1. 宿主的日志格式和内部事件文案属于非公开/非承诺的私有实现。
+        2. 本方法通过正则匹配 "选择请求模型:" 和 "尝试失败，切换到下一个模型" 等特定中文字符串来解析模型尝试和失败信息。
+        3. 如果宿主更新并修改了上述日志文案（例如调整了日志格式、日志输出语言或改用其他关键字），本正则匹配将静默失效。
+        4. 本方法仅用于提取失败模型名与事件次数，并不读取任何具体聊天内容或用户隐私。
+        """
 
         range_type = self.config.stats.range_type
         range_value = self.config.stats.range_value
