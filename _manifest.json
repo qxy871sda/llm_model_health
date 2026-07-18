@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "1.0.4",
+  "version": "1.0.5",
   "name": "LLM 模型健康度/成功率统计",
   "description": "总结并展示 MaiBot 使用的 LLM 模型的请求数、成功数与历史累计总量。",
   "author": {
@@ -15,7 +15,7 @@
     "issues": "https://github.com/qxy871sda/llm_model_health/issues"
   },
   "host_application": {
-    "min_version": "1.0.12",
+    "min_version": "1.0.0",
     "max_version": "1.99.99"
   },
   "sdk": {

@@ -30,7 +30,7 @@ class PluginSectionConfig(PluginConfigBase):
         json_schema_extra={"label": "触发指令"}
     )
     config_version: str = Field(
-        default="1.0.4",
+        default="1.0.5",
         description="配置版本",
         json_schema_extra={"label": "配置版本", "disabled": True},
     )
