@@ -58,7 +58,7 @@ class StatsSectionConfig(PluginConfigBase):
         json_schema_extra={"label": "启用历史模型汇总"},
     )
     sdk_statistics_days: int = Field(
-        default=365,
+        default=30,
         ge=1,
         le=365,
         description="历史模型汇总的查询范围，代表最近 N 天，可设置为 1 至 365。",
