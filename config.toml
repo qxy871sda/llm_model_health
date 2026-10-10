@@ -1,17 +1,29 @@
 [plugin]
 enabled = true
 # 插件配置版本号，请勿手动修改
-config_version = "1.0.5"
+config_version = "1.2.0"
 # 管理员 QQ 号，多个 QQ 用中/英文逗号分隔。留空时所有人均不可调用。
 admin_qq = ""
 command_trigger = "/模型健康度"
 
 [stats]
-# 日志统计范围类型。可选：minutes（按分钟）或 count（按请求次数）
+# 统计范围类型。可选：minutes（按分钟）或 count（按请求次数）
 range_type = "minutes"
-# 日志统计范围值。若是 minutes 则为分钟，若是 count 则为请求次数
-range_value = 30
-# 是否获取并展示历史模型请求数、平均耗时与累计费用汇总
-enable_sdk_statistics = true
+# 统计范围值。若是 minutes 则为分钟数；若是 count 则为窗口内最近 N 次模型请求尝试（成功与失败一起计数）
+range_value = 60
+# 窗口内最多读取多少条成功记录（宿主 llm_usage 表），窗口较长或请求量很大时调高
+db_scan_max_rows = 5000
+# 扫描失败日志的最大读取量（MB），预算不足时报告会提示窗口未被完整覆盖
+log_read_budget_mb = 32
+# 近期运行状态里最多展示多少个模型（按请求数排序）
+top_model_rows = 15
+# 是否从宿主 Prompt 快照读取「失败原因」与「模型自身耗时」（默认关闭；仅覆盖会写预览的模块）
+enable_snapshot_detail = false
+# 失败原因最多展示多少条
+snapshot_reason_rows = 5
+# 是否获取并展示历史模型请求数、token 用量与平均耗时汇总（默认关闭）
+enable_sdk_statistics = false
 # 历史模型汇总范围，代表最近 N 天，可设置为 1 至 365
-sdk_statistics_days = 30
+sdk_statistics_days = 7
+# 是否在历史汇总中展示每个模型的累计费用（默认关闭）
+show_model_cost = false
