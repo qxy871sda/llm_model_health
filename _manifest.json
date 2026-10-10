@@ -1,8 +1,8 @@
 {
   "manifest_version": 2,
-  "version": "1.0.5",
+  "version": "1.2.0",
   "name": "LLM 模型健康度/成功率统计",
-  "description": "总结并展示 MaiBot 使用的 LLM 模型的请求数、成功数与历史累计总量。",
+  "description": "统计并展示 MaiBot 使用的 LLM 模型健康度：窗口内请求成功率（成功取自宿主 llm_usage、失败取自宿主 WARNING 日志）、按需开启的失败原因与模型自身耗时，以及可选的历史请求数、token 用量与费用汇总。",
   "author": {
     "name": "qxy871sda",
     "url": "https://github.com/qxy871sda"
@@ -19,7 +19,7 @@
     "max_version": "1.99.99"
   },
   "sdk": {
-    "min_version": "2.6.0",
+    "min_version": "2.10.0",
     "max_version": "2.99.99"
   },
   "dependencies": [],
@@ -27,6 +27,7 @@
     "send.text",
     "send.forward",
     "config.get",
+    "database.query",
     "statistics.local.models"
   ],
   "i18n": {
